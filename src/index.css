@@ -1,0 +1,57 @@
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Nunito:wght@400;600;700;800&display=swap');
+@import "tailwindcss";
+
+:root {
+  /* Page backgrounds */
+  --bg:          #f5f0e8;
+  --bg-alt:      #fffcf5;
+  --surface:     #ffffff;
+  --surface-2:   #f9f6ef;
+
+  /* Green felt palette */
+  --felt:        #2a7a4e;
+  --felt-dark:   #1e5c3a;
+  --felt-light:  #e6f4ed;
+  --felt-mid:    #4a9e6e;
+
+  /* Amber/gold lamp glow */
+  --gold:        #e8a020;
+  --gold-light:  #fef3d0;
+  --gold-dark:   #b87c10;
+
+  /* Text */
+  --text:        #1a1a1a;
+  --text-muted:  #6b6b6b;
+  --text-light:  #999;
+
+  /* Borders */
+  --border:      #e2ddd4;
+  --border-strong: #c8c0b0;
+
+  /* Ball accent colors */
+  --ball-yellow: #f9a825;
+  --ball-red:    #e53935;
+  --ball-blue:   #1565c0;
+  --ball-purple: #7b1fa2;
+  --ball-orange: #ef6c00;
+  --ball-green:  #2e7d32;
+  --ball-black:  #1a1a1a;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: 'Nunito', sans-serif;
+  min-height: 100vh;
+}
+
+h1, h2, h3, .display {
+  font-family: 'Bebas Neue', sans-serif;
+  letter-spacing: 0.05em;
+}
