@@ -6,6 +6,7 @@ const links = [
   { to: '/schedule', label: 'Schedule' },
   { to: '/results', label: 'Results' },
   { to: '/submit', label: 'Submit Score' },
+  { to: '/rules', label: 'Rules' },
 ]
 
 export default function Nav() {
