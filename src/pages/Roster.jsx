@@ -10,7 +10,7 @@ export default function Roster() {
   useEffect(() => {
     const q = query(collection(db, 'players'), orderBy('average', 'desc'))
     const unsub = onSnapshot(q, snap => {
-      setPlayers(snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(p => !p.fillIn))
+      setPlayers(snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(p => !p.fillIn && p.active !== false))
     })
     return () => unsub()
   }, [])
@@ -27,7 +27,7 @@ export default function Roster() {
           🏆 STANDINGS
         </h1>
         <p style={{ color: 'rgba(255,255,255,0.65)', fontSize: '0.875rem', marginTop: '4px' }}>
-          Round 1 Final — sorted by average
+          Current standings — sorted by average
         </p>
       </div>
 
@@ -95,7 +95,7 @@ export default function Roster() {
                     padding: '4px 10px',
                     textAlign: 'center',
                   }}>
-                    <div style={{ fontWeight: '800', color: 'var(--gold-dark)', fontSize: '1rem' }}>{p.handicap}</div>
+                    <div style={{ fontWeight: '800', color: 'var(--gold-dark)', fontSize: '1rem' }}>{p.gamesPlayed > 0 ? p.handicap : '—'}</div>
                     <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: '600', letterSpacing: '0.05em' }}>HCP</div>
                   </div>
                   <div style={{

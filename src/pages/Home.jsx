@@ -21,7 +21,7 @@ export default function Home() {
   useEffect(() => {
     const q = query(collection(db, 'players'), orderBy('average', 'desc'), limit(5))
     const unsub = onSnapshot(q, snap => {
-      setTop5(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+      setTop5(snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(p => !p.fillIn && p.active !== false).slice(0, 5))
       setLoading(false)
     })
     return () => unsub()
