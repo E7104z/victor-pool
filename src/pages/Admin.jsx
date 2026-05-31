@@ -124,6 +124,8 @@ export default function Admin() {
   const [pinEdits, setPinEdits] = useState({})   // { [playerId]: { value, saved } }
   const [newSeasonConfirm, setNewSeasonConfirm] = useState(false)
   const [newSeasonBusy, setNewSeasonBusy] = useState(false)
+  const [editingMatchupId, setEditingMatchupId] = useState(null)
+  const [matchupEdit, setMatchupEdit] = useState({ p1: '', p2: 'BYE' })
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, u => setUser(u))
@@ -276,6 +278,43 @@ export default function Admin() {
     setTimeout(() => setPinEdits(prev => ({ ...prev, [playerId]: { value: val, saved: false } })), 2000)
   }
 
+  async function deleteUnplayedMatchups() {
+    const round = newRound.round
+    const toDelete = matchups.filter(m => (m.round || 1) === round && m.status !== 'played')
+    if (toDelete.length === 0) { alert('No unplayed matchups found for this round.'); return }
+    if (!window.confirm(`Delete ${toDelete.length} unplayed matchups from Round ${round}? This cannot be undone.`)) return
+    const { deleteDoc } = await import('firebase/firestore')
+    const b = writeBatch(db)
+    toDelete.forEach(m => b.delete(doc(db, 'matchups', m.id)))
+    await b.commit()
+    alert(`Deleted ${toDelete.length} matchups. You can now regenerate the schedule.`)
+  }
+
+  function startEditMatchup(m) {
+    setEditingMatchupId(m.id)
+    setMatchupEdit({ p1: m.player1Id, p2: m.player2Id || 'BYE' })
+  }
+
+  async function saveMatchupEdit(matchupId) {
+    const { p1, p2 } = matchupEdit
+    if (!p1) return
+    if (p2 === 'BYE') {
+      await updateDoc(doc(db, 'matchups', matchupId), {
+        player1Id: p1, player2Id: null, lowerRankedId: null, handicap: 0, status: 'bye',
+      })
+    } else {
+      const p1Data = players.find(p => p.id === p1)
+      const p2Data = players.find(p => p.id === p2)
+      const lowerRanked = (p1Data?.average || 0) <= (p2Data?.average || 0) ? p1 : p2
+      const lowerPlayer = lowerRanked === p1 ? p1Data : p2Data
+      await updateDoc(doc(db, 'matchups', matchupId), {
+        player1Id: p1, player2Id: p2, lowerRankedId: lowerRanked,
+        handicap: lowerPlayer?.handicap || 0, status: 'pending',
+      })
+    }
+    setEditingMatchupId(null)
+  }
+
   async function togglePlayerActive(playerId, current) {
     await updateDoc(doc(db, 'players', playerId), { active: !current })
   }
@@ -421,6 +460,10 @@ export default function Admin() {
                 </div>
                 <button onClick={generateRound} style={btnGreen}>Generate</button>
                 <button onClick={emailUnsubmittedReminders} style={btnGold}>✉ Email Reminders</button>
+                <button onClick={deleteUnplayedMatchups}
+                  style={{ ...btnGhost, border: '1px solid var(--ball-red)', color: 'var(--ball-red)' }}>
+                  🗑 Clear Unplayed
+                </button>
               </div>
             </div>
 
@@ -438,26 +481,48 @@ export default function Admin() {
                   fontSize: '0.875rem',
                 }}>
                   <span style={{ color: 'var(--text-muted)', minWidth: '44px', fontWeight: '600' }}>Wk {m.week}</span>
-                  <span style={{ flex: 1, fontWeight: '700', color: 'var(--text)' }}>
-                    {players.find(p => p.id === m.player1Id)?.name || m.player1Id}
-                    <span style={{ color: 'var(--text-muted)', fontWeight: '400' }}> vs </span>
-                    {m.player2Id ? (players.find(p => p.id === m.player2Id)?.name || m.player2Id) : 'BYE'}
-                  </span>
-                  <span style={{
-                    background: m.status === 'played' ? 'var(--felt-light)' : m.status === 'bye' ? 'var(--surface-2)' : 'var(--gold-light)',
-                    color: m.status === 'played' ? 'var(--felt)' : m.status === 'bye' ? 'var(--text-muted)' : 'var(--gold-dark)',
-                    borderRadius: '6px',
-                    padding: '2px 10px',
-                    fontSize: '0.72rem',
-                    fontWeight: '700',
-                  }}>
-                    {m.status}
-                  </span>
-                  {m.status === 'played' && (
-                    <button onClick={() => overrideMatchup(m.id, 'status', 'pending')}
-                      style={{ ...btnGhost, padding: '3px 10px', fontSize: '0.72rem' }}>
-                      Reopen
-                    </button>
+                  {editingMatchupId === m.id ? (
+                    <>
+                      <select value={matchupEdit.p1} onChange={e => setMatchupEdit(v => ({ ...v, p1: e.target.value }))}
+                        style={{ ...inputSt, flex: 1, padding: '4px 8px', fontSize: '0.82rem' }}>
+                        {players.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      </select>
+                      <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>vs</span>
+                      <select value={matchupEdit.p2} onChange={e => setMatchupEdit(v => ({ ...v, p2: e.target.value }))}
+                        style={{ ...inputSt, flex: 1, padding: '4px 8px', fontSize: '0.82rem' }}>
+                        <option value="BYE">BYE</option>
+                        {players.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      </select>
+                      <button onClick={() => saveMatchupEdit(m.id)} style={{ ...btnGreen, padding: '4px 12px', fontSize: '0.75rem' }}>Save</button>
+                      <button onClick={() => setEditingMatchupId(null)} style={{ ...btnGhost, padding: '4px 12px', fontSize: '0.75rem' }}>✕</button>
+                    </>
+                  ) : (
+                    <>
+                      <span style={{ flex: 1, fontWeight: '700', color: 'var(--text)' }}>
+                        {players.find(p => p.id === m.player1Id)?.name || m.player1Id}
+                        <span style={{ color: 'var(--text-muted)', fontWeight: '400' }}> vs </span>
+                        {m.player2Id ? (players.find(p => p.id === m.player2Id)?.name || m.player2Id) : 'BYE'}
+                      </span>
+                      <span style={{
+                        background: m.status === 'played' ? 'var(--felt-light)' : m.status === 'bye' ? 'var(--surface-2)' : 'var(--gold-light)',
+                        color: m.status === 'played' ? 'var(--felt)' : m.status === 'bye' ? 'var(--text-muted)' : 'var(--gold-dark)',
+                        borderRadius: '6px',
+                        padding: '2px 10px',
+                        fontSize: '0.72rem',
+                        fontWeight: '700',
+                      }}>
+                        {m.status}
+                      </span>
+                      {m.status === 'played' && (
+                        <button onClick={() => overrideMatchup(m.id, 'status', 'pending')}
+                          style={{ ...btnGhost, padding: '3px 10px', fontSize: '0.72rem' }}>
+                          Reopen
+                        </button>
+                      )}
+                      <button onClick={() => startEditMatchup(m)} style={{ ...btnGhost, padding: '3px 10px', fontSize: '0.72rem' }}>
+                        Edit
+                      </button>
+                    </>
                   )}
                 </div>
               ))}
