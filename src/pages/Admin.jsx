@@ -2,8 +2,9 @@ import { useState, useEffect } from 'react'
 import { auth, googleProvider, db } from '../firebase'
 import { signInWithPopup, signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth'
 import {
-  collection, onSnapshot, doc, updateDoc, writeBatch, query, orderBy
+  collection, onSnapshot, doc, updateDoc, writeBatch, getDoc, query, orderBy
 } from 'firebase/firestore'
+import { calcMatchResult } from '../utils/scoring'
 import { seedDatabase, seedSchedule } from '../seed'
 import TournamentTab from '../components/TournamentTab'
 
@@ -126,6 +127,8 @@ export default function Admin() {
   const [newSeasonBusy, setNewSeasonBusy] = useState(false)
   const [editingMatchupId, setEditingMatchupId] = useState(null)
   const [matchupEdit, setMatchupEdit] = useState({ p1: '', p2: 'BYE' })
+  const [editingResultId, setEditingResultId] = useState(null)
+  const [editGames, setEditGames] = useState([{ p1: '', p2: '' }, { p1: '', p2: '' }, { p1: '', p2: '' }])
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, u => setUser(u))
@@ -288,6 +291,107 @@ export default function Admin() {
     toDelete.forEach(m => b.delete(doc(db, 'matchups', m.id)))
     await b.commit()
     alert(`Deleted ${toDelete.length} matchups. You can now regenerate the schedule.`)
+  }
+
+  function reversedStats(snap, oldGames, oldGameWins, oldOutcome) {
+    const d = snap.data()
+    const gp = d.gamesPlayed || 0
+    const oldRaw = oldGames.reduce((s, x) => s + x, 0)
+    const newGP = Math.max(0, gp - oldGames.length)
+    const newAvg = newGP > 0 ? ((d.average || 0) * gp - oldRaw) / newGP : 0
+    return {
+      gamesPlayed: newGP,
+      average: parseFloat(newAvg.toFixed(4)),
+      gameRecord: [
+        Math.max(0, (d.gameRecord?.[0] || 0) - oldGameWins),
+        Math.max(0, (d.gameRecord?.[1] || 0) - (oldGames.length - oldGameWins)),
+      ],
+      matchRecord: [
+        Math.max(0, (d.matchRecord?.[0] || 0) - (oldOutcome === 'win' ? 1 : 0)),
+        Math.max(0, (d.matchRecord?.[1] || 0) - (oldOutcome === 'loss' ? 1 : 0)),
+        Math.max(0, (d.matchRecord?.[2] || 0) - (oldOutcome === 'tie' ? 1 : 0)),
+      ],
+    }
+  }
+
+  async function resetResult(r) {
+    if (!window.confirm(`Reset this result? The match will reopen for resubmission and stats will be reversed.`)) return
+    const oldGames = r.games || []
+    const p1GameWins = oldGames.filter(g => g.player1Score === 9).length
+    const p2GameWins = oldGames.length - p1GameWins
+    const p1Outcome = r.winner === r.player1Id ? 'win' : r.winner === r.player2Id ? 'loss' : 'tie'
+    const p2Outcome = r.winner === r.player2Id ? 'win' : r.winner === r.player1Id ? 'loss' : 'tie'
+    const [p1Snap, p2Snap] = await Promise.all([
+      getDoc(doc(db, 'players', r.player1Id)),
+      getDoc(doc(db, 'players', r.player2Id)),
+    ])
+    const b = writeBatch(db)
+    b.update(doc(db, 'players', r.player1Id), reversedStats(p1Snap, oldGames.map(g => g.player1Score), p1GameWins, p1Outcome))
+    b.update(doc(db, 'players', r.player2Id), reversedStats(p2Snap, oldGames.map(g => g.player2Score), p2GameWins, p2Outcome))
+    b.delete(doc(db, 'results', r.id))
+    b.update(doc(db, 'matchups', r.matchupId), { status: 'pending' })
+    await b.commit()
+  }
+
+  function startEditResult(r) {
+    setEditingResultId(r.id)
+    setEditGames((r.games || []).map(g => ({ p1: String(g.player1Score), p2: String(g.player2Score) })))
+  }
+
+  function getEditGameError(g) {
+    const p1 = parseInt(g.p1), p2 = parseInt(g.p2)
+    if (isNaN(p1) || isNaN(p2)) return 'Enter both scores'
+    if (p1 === 9 && p2 === 9) return 'Only one player can score 9'
+    if (p1 !== 9 && p2 !== 9) return 'One player must score 9'
+    if (p1 < 0 || p2 < 0 || p1 > 9 || p2 > 9) return 'Scores must be 0–9'
+    return null
+  }
+
+  async function saveResultEdit(r) {
+    if (editGames.some(g => getEditGameError(g))) return
+    const newGamesData = editGames.map(g => ({ player1Score: parseInt(g.p1), player2Score: parseInt(g.p2) }))
+    const matchup = matchups.find(m => m.id === r.matchupId)
+    const newResult = calcMatchResult(newGamesData, r.player1Id, r.player2Id, matchup?.lowerRankedId, matchup?.handicap || 0)
+    const [p1Snap, p2Snap] = await Promise.all([
+      getDoc(doc(db, 'players', r.player1Id)),
+      getDoc(doc(db, 'players', r.player2Id)),
+    ])
+    const oldGames = r.games || []
+    const p1OldWins = oldGames.filter(g => g.player1Score === 9).length
+    const p2OldWins = oldGames.length - p1OldWins
+    const p1NewWins = newGamesData.filter(g => g.player1Score === 9).length
+    const p2NewWins = newGamesData.length - p1NewWins
+    const p1OldOutcome = r.winner === r.player1Id ? 'win' : r.winner === r.player2Id ? 'loss' : 'tie'
+    const p2OldOutcome = r.winner === r.player2Id ? 'win' : r.winner === r.player1Id ? 'loss' : 'tie'
+    const p1NewOutcome = newResult.winner === r.player1Id ? 'win' : newResult.winner === r.player2Id ? 'loss' : 'tie'
+    const p2NewOutcome = newResult.winner === r.player2Id ? 'win' : newResult.winner === r.player1Id ? 'loss' : 'tie'
+
+    function adjustedStats(snap, oldScores, oldWins, oldOutcome, newScores, newWins, newOutcome) {
+      const d = snap.data()
+      const gp = d.gamesPlayed || 0
+      const oldRaw = oldScores.reduce((s, x) => s + x, 0)
+      const newRaw = newScores.reduce((s, x) => s + x, 0)
+      const newAvg = gp > 0 ? ((d.average || 0) * gp - oldRaw + newRaw) / gp : 0
+      return {
+        average: parseFloat(newAvg.toFixed(4)),
+        gameRecord: [
+          Math.max(0, (d.gameRecord?.[0] || 0) - oldWins + newWins),
+          Math.max(0, (d.gameRecord?.[1] || 0) - (oldScores.length - oldWins) + (newScores.length - newWins)),
+        ],
+        matchRecord: [
+          Math.max(0, (d.matchRecord?.[0] || 0) - (oldOutcome === 'win' ? 1 : 0) + (newOutcome === 'win' ? 1 : 0)),
+          Math.max(0, (d.matchRecord?.[1] || 0) - (oldOutcome === 'loss' ? 1 : 0) + (newOutcome === 'loss' ? 1 : 0)),
+          Math.max(0, (d.matchRecord?.[2] || 0) - (oldOutcome === 'tie' ? 1 : 0) + (newOutcome === 'tie' ? 1 : 0)),
+        ],
+      }
+    }
+
+    const b = writeBatch(db)
+    b.update(doc(db, 'players', r.player1Id), adjustedStats(p1Snap, oldGames.map(g => g.player1Score), p1OldWins, p1OldOutcome, newGamesData.map(g => g.player1Score), p1NewWins, p1NewOutcome))
+    b.update(doc(db, 'players', r.player2Id), adjustedStats(p2Snap, oldGames.map(g => g.player2Score), p2OldWins, p2OldOutcome, newGamesData.map(g => g.player2Score), p2NewWins, p2NewOutcome))
+    b.update(doc(db, 'results', r.id), { games: newGamesData, player1Total: newResult.player1Total, player2Total: newResult.player2Total, winner: newResult.winner })
+    await b.commit()
+    setEditingResultId(null)
   }
 
   function startEditMatchup(m) {
@@ -639,24 +743,78 @@ export default function Admin() {
               {[...results].sort((a, b) => b.week - a.week).map(r => {
                 const p1Name = players.find(p => p.id === r.player1Id)?.name || r.player1Id
                 const p2Name = players.find(p => p.id === r.player2Id)?.name || r.player2Id
+                const isEditing = editingResultId === r.id
                 return (
                   <div key={r.id} style={{ ...card, marginBottom: '8px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
                       <span style={{ fontWeight: '700', color: 'var(--text-muted)', fontSize: '0.8rem' }}>Week {r.week}</span>
-                      <span style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>
-                        by: {players.find(p => p.id === r.submittedBy)?.name || r.submittedBy}
-                      </span>
+                      <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                        <span style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>
+                          by: {players.find(p => p.id === r.submittedBy)?.name || r.submittedBy}
+                        </span>
+                        {!isEditing && (
+                          <>
+                            <button onClick={() => startEditResult(r)} style={{ ...btnGhost, padding: '2px 10px', fontSize: '0.72rem' }}>Edit</button>
+                            <button onClick={() => resetResult(r)} style={{ ...btnGhost, padding: '2px 10px', fontSize: '0.72rem', color: 'var(--ball-red)', borderColor: 'var(--ball-red)' }}>Reset</button>
+                          </>
+                        )}
+                      </div>
                     </div>
-                    <div style={{ display: 'flex', gap: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
-                      <span style={{ fontWeight: '800', color: r.winner === r.player1Id ? 'var(--felt)' : 'var(--text)', fontSize: '1rem' }}>
-                        {p1Name}: {r.player1Total}
-                      </span>
-                      <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>vs</span>
-                      <span style={{ fontWeight: '800', color: r.winner === r.player2Id ? 'var(--felt)' : 'var(--text)', fontSize: '1rem' }}>
-                        {p2Name}: {r.player2Total}
-                      </span>
-                      {r.winner === 'tie' && <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>TIE</span>}
-                    </div>
+
+                    {isEditing ? (
+                      <div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px' }}>
+                          <span style={{ fontWeight: '800', fontSize: '0.9rem', color: 'var(--felt-dark)' }}>{p1Name}</span>
+                          <span style={{ fontWeight: '800', fontSize: '0.9rem', color: 'var(--felt-dark)' }}>{p2Name}</span>
+                        </div>
+                        {editGames.map((g, gi) => {
+                          const err = g.p1 !== '' && g.p2 !== '' ? getEditGameError(g) : null
+                          return (
+                            <div key={gi} style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px' }}>
+                              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', width: '44px' }}>Game {gi + 1}</span>
+                              <input type="number" min="0" max="9" value={g.p1}
+                                onChange={e => setEditGames(prev => prev.map((x, i) => i === gi ? { ...x, p1: e.target.value } : x))}
+                                style={{ ...inputSt, width: '56px', textAlign: 'center', padding: '5px' }} />
+                              <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>–</span>
+                              <input type="number" min="0" max="9" value={g.p2}
+                                onChange={e => setEditGames(prev => prev.map((x, i) => i === gi ? { ...x, p2: e.target.value } : x))}
+                                style={{ ...inputSt, width: '56px', textAlign: 'center', padding: '5px' }} />
+                              {err && <span style={{ fontSize: '0.72rem', color: 'var(--ball-red)' }}>{err}</span>}
+                            </div>
+                          )
+                        })}
+                        <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                          <button onClick={() => saveResultEdit(r)}
+                            disabled={editGames.some(g => getEditGameError(g))}
+                            style={{ ...btnGreen, padding: '6px 16px', fontSize: '0.8rem', opacity: editGames.some(g => getEditGameError(g)) ? 0.4 : 1 }}>
+                            Save
+                          </button>
+                          <button onClick={() => setEditingResultId(null)} style={{ ...btnGhost, padding: '6px 12px', fontSize: '0.8rem' }}>Cancel</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div>
+                        <div style={{ display: 'flex', gap: '16px', alignItems: 'center', flexWrap: 'wrap', marginBottom: r.games?.length ? '8px' : 0 }}>
+                          <span style={{ fontWeight: '800', color: r.winner === r.player1Id ? 'var(--felt)' : 'var(--text)', fontSize: '1rem' }}>
+                            {p1Name}: {r.player1Total}
+                          </span>
+                          <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>vs</span>
+                          <span style={{ fontWeight: '800', color: r.winner === r.player2Id ? 'var(--felt)' : 'var(--text)', fontSize: '1rem' }}>
+                            {p2Name}: {r.player2Total}
+                          </span>
+                          {r.winner === 'tie' && <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>TIE</span>}
+                        </div>
+                        {r.games?.length > 0 && (
+                          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                            {r.games.map((g, gi) => (
+                              <span key={gi} style={{ background: 'var(--surface-2)', borderRadius: '6px', padding: '2px 8px', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                G{gi + 1}: {g.player1Score}–{g.player2Score}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )
               })}

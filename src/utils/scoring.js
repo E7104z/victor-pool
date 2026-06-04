@@ -37,10 +37,32 @@ export function calcMatchResult(games, player1Id, player2Id, lowerRankedId, hand
   if (lowerRankedId === player1Id) p1Total += handicap
   if (lowerRankedId === player2Id) p2Total += handicap
 
+  const winner = p1Total > p2Total ? player1Id : p2Total > p1Total ? player2Id : 'tie'
+  const isTie = winner === 'tie'
+
+  const p1GameWins = games.filter(g => g.player1Score > g.player2Score).length
+  const p2GameWins = games.filter(g => g.player2Score > g.player1Score).length
+
   return {
     player1Total: p1Total,
     player2Total: p2Total,
-    winner: p1Total > p2Total ? player1Id : p2Total > p1Total ? player2Id : 'tie'
+    winner,
+    player1Result: {
+      games: games.map(g => ({ playerScore: g.player1Score })),
+      gameWins: p1GameWins,
+      gameLosses: games.length - p1GameWins,
+      matchWin: winner === player1Id,
+      matchLoss: winner === player2Id,
+      matchTie: isTie,
+    },
+    player2Result: {
+      games: games.map(g => ({ playerScore: g.player2Score })),
+      gameWins: p2GameWins,
+      gameLosses: games.length - p2GameWins,
+      matchWin: winner === player2Id,
+      matchLoss: winner === player1Id,
+      matchTie: isTie,
+    },
   }
 }
 
